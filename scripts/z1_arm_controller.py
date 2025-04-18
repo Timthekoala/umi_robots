@@ -9,9 +9,12 @@ from scipy.spatial.transform import Rotation
 
 # Import Z1 SDK library using ROS package-relative path
 import rospkg
-rospack = rospkg.RosPack()
-package_path = rospack.get_path('umi_robots')
-sys.path.append(os.path.join(package_path, "libs/z1_sdk"))
+# rospack = rospkg.RosPack()
+# package_path = rospack.get_path('umi_robots')
+# sys.path.append(os.path.join(package_path, "libs/z1_sdk"))
+sys.path.append("/codes/unitree_ws/z1_sdk/lib")
+
+# print("Append path: ", os.path.join(package_path, "libs/z1_sdk"))
 import unitree_arm_interface
 
 class Z1ArmController:
