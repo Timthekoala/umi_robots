@@ -9,13 +9,11 @@ from scipy.spatial.transform import Rotation
 
 # Import Z1 SDK library using ROS package-relative path
 import rospkg
-# rospack = rospkg.RosPack()
-# package_path = rospack.get_path('umi_robots')
-# sys.path.append(os.path.join(package_path, "libs/z1_sdk"))
-sys.path.append("/codes/unitree_ws/z1_sdk/lib")
-
-# print("Append path: ", os.path.join(package_path, "libs/z1_sdk"))
-import unitree_arm_interface
+rospack = rospkg.RosPack()
+package_path = rospack.get_path('umi_robots')
+sdk_path = os.path.join(package_path, "libs/z1_sdk")
+sys.path.append(sdk_path)
+import z1_arm_interface
 
 class Z1ArmController:
     """
@@ -28,7 +26,7 @@ class Z1ArmController:
         rospy.init_node('z1_arm_controller')
         
         # Initialize Z1 arm interface without gripper
-        self.arm = unitree_arm_interface.ArmInterface(hasGripper=False)
+        self.arm = z1_arm_interface.ArmInterface(hasGripper=False)
         self.arm_model = self.arm._ctrlComp.armModel
         
         # Get robot parameters
@@ -48,10 +46,10 @@ class Z1ArmController:
         
         # Get into joint control mode
         rospy.loginfo("Setting arm to JOINTCTRL mode...")
-        if self.arm.getCurrentState() != unitree_arm_interface.ArmFSMState.JOINTCTRL:
-            self.arm.setFsm(unitree_arm_interface.ArmFSMState.PASSIVE)
+        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.JOINTCTRL:
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
             rospy.sleep(0.5)
-            self.arm.startTrack(unitree_arm_interface.ArmFSMState.JOINTCTRL)
+            self.arm.startTrack(z1_arm_interface.ArmFSMState.JOINTCTRL)
             rospy.sleep(0.5)
         
         # Update current joint state
@@ -106,7 +104,7 @@ class Z1ArmController:
         target_pose = np.array([roll, pitch, yaw, x, y, z])
         
         # Convert pose to homogeneous transformation matrix
-        T_target = unitree_arm_interface.postureToHomo(target_pose)
+        T_target = z1_arm_interface.postureToHomo(target_pose)
         
         # Compute inverse kinematics
         success, joint_cmd = self.arm_model.inverseKinematics(T_target, self.current_joint_state, True)
@@ -129,7 +127,7 @@ class Z1ArmController:
         rospy.loginfo("Shutting down Z1 Arm Controller")
         self.arm.loopOff()
         # Set the arm to PASSIVE mode for safety
-        self.arm.setFsm(unitree_arm_interface.ArmFSMState.PASSIVE)
+        self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
 
 def main():
     controller = Z1ArmController()

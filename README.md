@@ -38,6 +38,13 @@ The controller handles the communication with the Z1 arm hardware through the Un
    source ~/catkin_ws/devel/setup.bash
    ```
 
+4. Build Z1 SDK
+    ```bash
+    cd src/umi_robots/libs/z1_sdk
+    mkdir build
+    cd build && rm -r ./*
+    cmake ..
+    ``
 ## Usage
 
 ### Launching the Controller
