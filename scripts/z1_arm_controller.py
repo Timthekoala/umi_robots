@@ -49,16 +49,17 @@ class Z1ArmController:
         self.arm.loopOn()
         
         # Get into joint control mode
-        rospy.loginfo("Setting arm to JOINTCTRL mode...")
-        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.JOINTCTRL:
-            self.arm.startTrack(z1_arm_interface.ArmFSMState.JOINTCTRL)
-            rospy.sleep(0.5)
+        self.switch_to_jointctrl()
         
         # Move to forward position using labelRun
         rospy.loginfo("Moving to forward position...")
-        self.arm.labelRun("forward")
+        # self.arm.labelRun("forward")
+        self.arm.backToStart()
+
+
         rospy.sleep(2.0)  # Give time for the movement to complete
-        
+        self.swithch_to_lowcmd()
+
         # Update current joint state
         self.current_joint_state = self.arm.q
         
@@ -79,20 +80,48 @@ class Z1ArmController:
         self.joint_state_timer = rospy.Timer(rospy.Duration(1.0/50.0), self.publish_joint_states)
         
         rospy.loginfo("Z1 Arm Controller initialized and ready")
-    
+
+    def swithch_to_lowcmd(self):
+        """
+        Switch to LOWCMD mode
+        """
+        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.LOWCMD:
+            rospy.loginfo("Switching to LOWCMD mode")
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
+            rospy.sleep(0.2)
+            self.arm.setFsmLowcmd()
+            rospy.sleep(0.5)
+            rospy.loginfo("Switched to LOWCMD mode")
+
+    def switch_to_jointctrl(self):
+        """
+        Switch to JOINTCTRL mode
+        """
+        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.JOINTCTRL:
+            rospy.loginfo("Switching to JOINTCTRL mode")
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
+            rospy.sleep(0.2)
+            self.arm.startTrack(z1_arm_interface.ArmFSMState.JOINTCTRL)
+            rospy.sleep(0.5)
+            rospy.loginfo("Switched to JOINTCTRL mode")
+
     def joint_cmd_callback(self, msg):
         """
         Callback for joint commands.
         Expects a Float64MultiArray with 6 values for the 6 arm joints
+        Uses _execute_joint_trajectory for smoother motion control
         """
         if len(msg.data) < 6:
             rospy.logwarn("Joint command needs at least 6 values")
             return
         
-        # Only switch to LOWCMD if not already in it
+        # Make sure we're in LOWCMD mode
         if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.LOWCMD:
-            self.arm.setFsm(z1_arm_interface.ArmFSMState.LOWCMD)
+            rospy.loginfo("Switching to LOWCMD mode")
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
             rospy.sleep(0.2)
+            self.arm.setFsmLowcmd()
+            rospy.sleep(0.5)
             
         target_position = np.array(msg.data[:6])
         
@@ -100,23 +129,26 @@ class Z1ArmController:
         for i in range(6):
             target_position[i] = np.clip(target_position[i], self.joint_min[i], self.joint_max[i])
         
-        # Get current joint positions
-        current_position = self.current_joint_state
-        
         # Log the movement
         rospy.loginfo(f"Moving to joint positions: {target_position}")
         
-        # Implement smooth trajectory execution similar to example_lowcmd.py
-        duration = 1000  # Number of steps for the trajectory (can be adjusted)
-        dt = self.arm._ctrlComp.dt
+        # Get current position
+        current_position = self.current_joint_state
         
-        # Start a separate thread for smooth trajectory execution
-        threading_obj = threading.Thread(target=self._execute_joint_trajectory, 
-                                        args=(current_position, target_position, duration, dt))
-        threading_obj.daemon = True
-        threading_obj.start()
+        # Execute trajectory between current and target positions
+        # Use a 2 second duration with 10ms timestep (200 steps)
+        duration = 200  # number of steps
+        dt = 0.01       # time step in seconds
         
-        # Update target state
+        # Create a thread to execute the trajectory to avoid blocking the callback
+        trajectory_thread = threading.Thread(
+            target=self._execute_joint_trajectory,
+            args=(current_position, target_position, duration, dt)
+        )
+        trajectory_thread.daemon = True
+        trajectory_thread.start()
+        
+        # Update target state (actual current state will be updated in _execute_joint_trajectory)
         self.target_joint_state = target_position
     
     def _execute_joint_trajectory(self, start_pos, end_pos, duration, dt):
@@ -247,6 +279,8 @@ class Z1ArmController:
     def shutdown(self):
         """Clean shutdown of the arm controller"""
         rospy.loginfo("Shutting down Z1 Arm Controller")
+        self.switch_to_jointctrl()
+
         
         # Proper shutdown sequence based on example code
         try:
