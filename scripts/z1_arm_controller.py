@@ -3,6 +3,8 @@ import sys
 import os
 import numpy as np
 import rospy
+import threading
+import time
 from std_msgs.msg import Float64MultiArray
 from geometry_msgs.msg import Pose
 from scipy.spatial.transform import Rotation
@@ -11,8 +13,9 @@ from scipy.spatial.transform import Rotation
 import rospkg
 rospack = rospkg.RosPack()
 package_path = rospack.get_path('umi_robots')
-sdk_path = os.path.join(package_path, "libs/z1_sdk")
+sdk_path = os.path.join(package_path, "libs/z1_sdk/lib")
 sys.path.append(sdk_path)
+print(f"Adding Z1 SDK path: {sdk_path}")
 import z1_arm_interface
 
 class Z1ArmController:
@@ -47,8 +50,6 @@ class Z1ArmController:
         # Get into joint control mode
         rospy.loginfo("Setting arm to JOINTCTRL mode...")
         if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.JOINTCTRL:
-            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
-            rospy.sleep(0.5)
             self.arm.startTrack(z1_arm_interface.ArmFSMState.JOINTCTRL)
             rospy.sleep(0.5)
         
@@ -70,18 +71,75 @@ class Z1ArmController:
             rospy.logwarn("Joint command needs at least 6 values")
             return
         
-        joint_cmd = np.array(msg.data[:6])
+        target_position = np.array(msg.data[:6])
         
         # Check joint limits
         for i in range(6):
-            joint_cmd[i] = np.clip(joint_cmd[i], self.joint_min[i], self.joint_max[i])
+            target_position[i] = np.clip(target_position[i], self.joint_min[i], self.joint_max[i])
         
-        # Send joint command to the arm
-        rospy.loginfo(f"Moving to joint positions: {joint_cmd}")
-        self.arm.MoveJ(joint_cmd, 0.0, self.max_joint_speed)  # Passing 0.0 as gripper position
+        # Get current joint positions
+        current_position = self.current_joint_state
         
-        # Update internal state
-        self.current_joint_state = joint_cmd
+        # Log the movement
+        rospy.loginfo(f"Moving to joint positions: {target_position}")
+        
+        # Implement smooth trajectory execution similar to example_lowcmd.py
+        duration = 100  # Number of steps for the trajectory (can be adjusted)
+        dt = self.arm._ctrlComp.dt
+        
+        # Start a separate thread for smooth trajectory execution
+        threading_obj = threading.Thread(target=self._execute_joint_trajectory, 
+                                        args=(current_position, target_position, duration, dt))
+        threading_obj.daemon = True
+        threading_obj.start()
+        
+        # Update target state
+        self.target_joint_state = target_position
+    
+    def _execute_joint_trajectory(self, start_pos, end_pos, duration, dt):
+        """
+        Execute a smooth trajectory from start to end position
+        Similar to the approach in example_lowcmd.py
+        """
+        try:
+            # Get current state for reference
+            current_state = self.arm.getCurrentState()
+            
+            # Only switch to LOWCMD if not already in it
+            if current_state != z1_arm_interface.ArmFSMState.LOWCMD:
+                self.arm.setFsm(z1_arm_interface.ArmFSMState.LOWCMD)
+                rospy.sleep(0.2)
+            
+            arm_model = self.arm_model
+            
+            for i in range(duration+1):
+                # Interpolate position (same as example_lowcmd.py)
+                position = start_pos * (1 - i/duration) + end_pos * (i/duration)
+                
+                # Calculate velocity
+                velocity = (end_pos - start_pos) / (duration * dt)
+                
+                # Calculate torque using inverse dynamics
+                torque = arm_model.inverseDynamics(position, velocity, np.zeros(6), np.zeros(6))
+                
+                # Apply command to the arm
+                self.arm.setArmCmd(position, velocity, torque)
+                
+                # Send the command via UDP (critical step from example_lowcmd.py)
+                self.arm.sendRecv()
+                
+                # Update internal state
+                self.current_joint_state = position
+                
+                # Sleep to maintain control rate
+                time.sleep(dt)
+            
+            rospy.loginfo("Joint trajectory completed")
+        
+                
+        except Exception as e:
+            rospy.logerr(f"Error during trajectory execution: {e}")
+
     
     def endpose_cmd_callback(self, msg):
         """
@@ -125,9 +183,26 @@ class Z1ArmController:
     def shutdown(self):
         """Clean shutdown of the arm controller"""
         rospy.loginfo("Shutting down Z1 Arm Controller")
+        
+        # First move to the safe home position: [0.0, 1.5, -1.0, -0.54, 0.0, 0.0]
+        try:
+            rospy.loginfo("Moving to safe home position before shutdown")
+            home_position = np.array([0.0, 1.5, -1.0, -0.54, 0.0, 0.0])
+            
+            # Use MoveJ with a reasonable speed to safely return home
+            self.arm.MoveJ(home_position, self.max_joint_speed)
+            
+            # Wait for the motion to complete
+            rospy.sleep(2.0)
+            
+            rospy.loginfo("Reached safe home position, switching to passive mode")
+        except Exception as e:
+            rospy.logwarn(f"Failed to reach home position before shutdown: {e}")
+        
+        # Now turn off the control loop and set to PASSIVE mode
         self.arm.loopOff()
-        # Set the arm to PASSIVE mode for safety
         self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
+        rospy.loginfo("Arm is now in passive mode")
 
 def main():
     controller = Z1ArmController()
