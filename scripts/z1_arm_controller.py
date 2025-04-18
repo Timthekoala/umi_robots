@@ -58,7 +58,7 @@ class Z1ArmController:
 
 
         rospy.sleep(2.0)  # Give time for the movement to complete
-        self.swithch_to_lowcmd()
+        # self.swithch_to_lowcmd()
 
         # Update current joint state
         self.current_joint_state = self.arm.q
@@ -210,25 +210,10 @@ class Z1ArmController:
         
         # Create target pose
         target_pose = np.array([roll, pitch, yaw, x, y, z])
+        # target_pose = np.asarray([0.5,0.1,0.1,0.5,-0.2,0.5])
         
-        # Convert pose to homogeneous transformation matrix
-        T_target = z1_arm_interface.postureToHomo(target_pose)
+        self.arm.MoveJ(target_pose, self.max_joint_speed)
         
-        # Compute inverse kinematics
-        success, joint_cmd = self.arm_model.inverseKinematics(T_target, self.current_joint_state, True)
-        
-        if not success:
-            rospy.logwarn("IK failed for the requested pose")
-            return
-        
-        # Send command to arm
-        rospy.loginfo(f"Moving to pose: [r={roll:.3f}, p={pitch:.3f}, y={yaw:.3f}], pos=[{x:.3f}, {y:.3f}, {z:.3f}]")
-        rospy.loginfo(f"Calculated joint positions: {joint_cmd}")
-        
-        self.arm.MoveJ(joint_cmd, 0.0, self.max_joint_speed)  # Passing 0.0 as gripper position
-        
-        # Update internal state
-        self.current_joint_state = joint_cmd
     
     def publish_joint_states(self, event):
         """
