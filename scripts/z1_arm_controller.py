@@ -109,19 +109,12 @@ class Z1ArmController:
         """
         Callback for joint commands.
         Expects a Float64MultiArray with 6 values for the 6 arm joints
-        Uses _execute_joint_trajectory for smoother motion control
+        Uses direct joint position control in JOINTCTRL mode
         """
         if len(msg.data) < 6:
             rospy.logwarn("Joint command needs at least 6 values")
             return
         
-        # Make sure we're in LOWCMD mode
-        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.LOWCMD:
-            rospy.loginfo("Switching to LOWCMD mode")
-            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
-            rospy.sleep(0.2)
-            self.arm.setFsmLowcmd()
-            rospy.sleep(0.5)
             
         target_position = np.array(msg.data[:6])
         
@@ -132,23 +125,10 @@ class Z1ArmController:
         # Log the movement
         rospy.loginfo(f"Moving to joint positions: {target_position}")
         
-        # Get current position
-        current_position = self.current_joint_state
+        # Set joint command directly
+        self._set_joint_positions(target_position)
         
-        # Execute trajectory between current and target positions
-        # Use a 2 second duration with 10ms timestep (200 steps)
-        duration = 200  # number of steps
-        dt = 0.01       # time step in seconds
-        
-        # Create a thread to execute the trajectory to avoid blocking the callback
-        trajectory_thread = threading.Thread(
-            target=self._execute_joint_trajectory,
-            args=(current_position, target_position, duration, dt)
-        )
-        trajectory_thread.daemon = True
-        trajectory_thread.start()
-        
-        # Update target state (actual current state will be updated in _execute_joint_trajectory)
+        # Update target state
         self.target_joint_state = target_position
     
     def _execute_joint_trajectory(self, start_pos, end_pos, duration, dt):
@@ -189,6 +169,52 @@ class Z1ArmController:
                 
         except Exception as e:
             rospy.logerr(f"Error during trajectory execution: {e}")
+
+    def _set_joint_positions(self, joint_positions):
+        """
+        Set joint positions directly using JOINTCTRL mode.
+        This method implements joint control similar to the C++ example in Z1HW::write.
+        
+        Args:
+            joint_positions: Array of 6 joint position commands in radians
+        """
+        try:
+            # Make sure we're in JOINTCTRL mode
+            if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.JOINTCTRL:
+                rospy.loginfo("Switching to JOINTCTRL mode")
+                self.switch_to_jointctrl()
+            
+            # In the Python SDK, for JOINTCTRL mode we use setTargetQ method
+            # or setArmCmd method depending on the version
+            try:
+                # Newer Z1 SDK versions have setTargetQ
+                self.arm.setTargetQ(joint_positions)
+            except AttributeError:
+                # Fall back to using setArmCmd for older versions
+                # Only set position, with zero velocity and torque
+                zero_array = np.zeros(6)
+                self.arm.setArmCmd(joint_positions, zero_array, zero_array)
+            
+            # Send the command
+            self.arm.sendRecv()
+            
+            # Create and publish a joint state message for the commands
+            cmd_msg = JointState()
+            cmd_msg.header.stamp = rospy.Time.now()
+            cmd_msg.header.frame_id = "joint_commands"
+            cmd_msg.name = self.joint_names
+            cmd_msg.position = joint_positions
+            cmd_msg.velocity = [0.0] * 6  # Zero velocity for position control
+            cmd_msg.effort = [0.0] * 6    # No specific effort
+            
+            # Publish the command
+            self.joint_commands_internal_pub.publish(cmd_msg)
+            
+            # Update internal state
+            self.current_joint_state = joint_positions
+            
+        except Exception as e:
+            rospy.logerr(f"Error setting joint positions: {e}")
 
     
     def endpose_cmd_callback(self, msg):
