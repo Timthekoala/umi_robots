@@ -7,6 +7,7 @@ import threading
 import time
 from std_msgs.msg import Float64MultiArray
 from geometry_msgs.msg import Pose
+from sensor_msgs.msg import JointState
 from scipy.spatial.transform import Rotation
 
 # Import Z1 SDK library using ROS package-relative path
@@ -53,12 +54,29 @@ class Z1ArmController:
             self.arm.startTrack(z1_arm_interface.ArmFSMState.JOINTCTRL)
             rospy.sleep(0.5)
         
+        # Move to forward position using labelRun
+        rospy.loginfo("Moving to forward position...")
+        self.arm.labelRun("forward")
+        rospy.sleep(2.0)  # Give time for the movement to complete
+        
         # Update current joint state
         self.current_joint_state = self.arm.q
         
         # Create ROS subscribers
         self.joint_cmd_sub = rospy.Subscriber('/joint_commands', Float64MultiArray, self.joint_cmd_callback, queue_size=1)
         self.endpose_cmd_sub = rospy.Subscriber('/endpose_command', Pose, self.endpose_cmd_callback, queue_size=1)
+        
+        # Create joint state publisher
+        self.joint_state_pub = rospy.Publisher('/joint_states', JointState, queue_size=10)
+        
+        # Create publisher for internal joint commands
+        self.joint_commands_internal_pub = rospy.Publisher('/joint_commands_internal', JointState, queue_size=10)
+        
+        # Joint names for the Z1 robot arm
+        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        
+        # Create a timer to publish joint states at 50 Hz
+        self.joint_state_timer = rospy.Timer(rospy.Duration(1.0/50.0), self.publish_joint_states)
         
         rospy.loginfo("Z1 Arm Controller initialized and ready")
     
@@ -71,6 +89,11 @@ class Z1ArmController:
             rospy.logwarn("Joint command needs at least 6 values")
             return
         
+        # Only switch to LOWCMD if not already in it
+        if self.arm.getCurrentState() != z1_arm_interface.ArmFSMState.LOWCMD:
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.LOWCMD)
+            rospy.sleep(0.2)
+            
         target_position = np.array(msg.data[:6])
         
         # Check joint limits
@@ -84,7 +107,7 @@ class Z1ArmController:
         rospy.loginfo(f"Moving to joint positions: {target_position}")
         
         # Implement smooth trajectory execution similar to example_lowcmd.py
-        duration = 100  # Number of steps for the trajectory (can be adjusted)
+        duration = 1000  # Number of steps for the trajectory (can be adjusted)
         dt = self.arm._ctrlComp.dt
         
         # Start a separate thread for smooth trajectory execution
@@ -102,14 +125,6 @@ class Z1ArmController:
         Similar to the approach in example_lowcmd.py
         """
         try:
-            # Get current state for reference
-            current_state = self.arm.getCurrentState()
-            
-            # Only switch to LOWCMD if not already in it
-            if current_state != z1_arm_interface.ArmFSMState.LOWCMD:
-                self.arm.setFsm(z1_arm_interface.ArmFSMState.LOWCMD)
-                rospy.sleep(0.2)
-            
             arm_model = self.arm_model
             
             for i in range(duration+1):
@@ -127,6 +142,9 @@ class Z1ArmController:
                 
                 # Send the command via UDP (critical step from example_lowcmd.py)
                 self.arm.sendRecv()
+                
+                # Publish joint commands to internal topic
+                self.publish_joint_commands(position, velocity, torque)
                 
                 # Update internal state
                 self.current_joint_state = position
@@ -180,29 +198,88 @@ class Z1ArmController:
         # Update internal state
         self.current_joint_state = joint_cmd
     
+    def publish_joint_states(self, event):
+        """
+        Timer callback to publish joint states at 50 Hz.
+        Gets the current joint positions from the arm interface and publishes them
+        to the /joint_states topic in the standard JointState format.
+        """
+        try:
+            # Get current joint positions from arm
+            current_positions = self.arm.q
+            
+            # Create JointState message
+            joint_state_msg = JointState()
+            joint_state_msg.header.stamp = rospy.Time.now()
+            joint_state_msg.name = self.joint_names
+            joint_state_msg.position = current_positions
+            
+            # Get current joint velocities if available
+            if hasattr(self.arm, 'dq'):
+                joint_state_msg.velocity = self.arm.dq
+                
+            # Publish the joint state message
+            self.joint_state_pub.publish(joint_state_msg)
+            
+            # Update the internal state variable (useful for other methods)
+            self.current_joint_state = current_positions
+            
+        except Exception as e:
+            rospy.logerr(f"Error publishing joint states: {e}")
+    
+    def publish_joint_commands(self, position, velocity, torque):
+        """
+        Publish joint commands to the internal topic.
+        
+        Args:
+            position: Joint positions array
+            velocity: Joint velocities array
+            torque: Joint torques array
+        """
+        cmd_msg = JointState()
+        cmd_msg.header.stamp = rospy.Time.now()
+        cmd_msg.name = self.joint_names
+        cmd_msg.position = position
+        cmd_msg.velocity = velocity
+        cmd_msg.effort = torque
+        self.joint_commands_internal_pub.publish(cmd_msg)
+    
     def shutdown(self):
         """Clean shutdown of the arm controller"""
         rospy.loginfo("Shutting down Z1 Arm Controller")
         
-        # First move to the safe home position: [0.0, 1.5, -1.0, -0.54, 0.0, 0.0]
+        # Proper shutdown sequence based on example code
         try:
-            rospy.loginfo("Moving to safe home position before shutdown")
-            home_position = np.array([0.0, 1.5, -1.0, -0.54, 0.0, 0.0])
+            # First make sure we're in a proper control state
+            current_state = self.arm.getCurrentState()
+            rospy.loginfo(f"Current arm state: {current_state}")
             
-            # Use MoveJ with a reasonable speed to safely return home
-            self.arm.MoveJ(home_position, self.max_joint_speed)
+            # Use the backToStart method from the example code which handles state transitions properly
+            rospy.loginfo("Moving arm to safe position")
+            self.arm.backToStart()
             
             # Wait for the motion to complete
             rospy.sleep(2.0)
             
-            rospy.loginfo("Reached safe home position, switching to passive mode")
+            rospy.loginfo("Arm moved to safe position")
         except Exception as e:
-            rospy.logwarn(f"Failed to reach home position before shutdown: {e}")
+            rospy.logwarn(f"Error during arm positioning: {e}")
         
-        # Now turn off the control loop and set to PASSIVE mode
+        # Finally turn off the control loop (this should handle state transitions properly)
+        rospy.loginfo("Turning off control loop")
+        
+        # Setting to PASSIVE mode after loop is off
+        rospy.loginfo("Setting to passive mode")
+        try:
+            self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
+        except Exception as e:
+            rospy.logwarn(f"Error setting passive mode: {e}")
+        rospy.loginfo("Setting to passive mode complete")
         self.arm.loopOff()
-        self.arm.setFsm(z1_arm_interface.ArmFSMState.PASSIVE)
-        rospy.loginfo("Arm is now in passive mode")
+
+        rospy.loginfo("Arm shutdown complete")
+
+
 
 def main():
     controller = Z1ArmController()
