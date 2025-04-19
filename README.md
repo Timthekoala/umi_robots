@@ -44,6 +44,7 @@ The controller handles the communication with the Z1 arm hardware through the Un
     mkdir build
     cd build && rm -r ./*
     cmake ..
+    make -j
     ``
 ## Usage
 
