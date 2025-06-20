@@ -54,7 +54,7 @@ class Z1ArmController:
         # Move to forward position using labelRun
         rospy.loginfo("Moving to forward position...")
         self.arm.labelRun("forward")
-        # self.arm.backToStart()
+        self.arm.backToStart()
 
 
         rospy.sleep(2.0)  # Give time for the movement to complete
