@@ -73,7 +73,7 @@ def test_endpose_publisher():
         pose_pub.publish(pose_msg)
         rate.sleep()
     
-    """ # Second phase: gradually move Y from -0.5 to 0.5
+    # Second phase: gradually move Y from -0.5 to 0.5
     start_time = rospy.Time.now()
     current_time = 0.0
     
@@ -108,7 +108,7 @@ def test_endpose_publisher():
         
         # Publish the message
         pose_pub.publish(pose_msg)
-        rate.sleep() """
+        rate.sleep()
     
     rospy.loginfo("End pose movement completed!")
     rospy.loginfo(f"Final position: ({x}, {y_end}, {z})")

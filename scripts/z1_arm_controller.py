@@ -54,7 +54,7 @@ class Z1ArmController:
         # Move to forward position using labelRun
         rospy.loginfo("Moving to forward position...")
         self.arm.labelRun("forward")
-        self.arm.backToStart()
+        # self.arm.backToStart()
 
 
         rospy.sleep(2.0)  # Give time for the movement to complete
@@ -239,6 +239,7 @@ class Z1ArmController:
         # target_pose = np.asarray([0.5,0.1,0.1,0.5,-0.2,0.5])
         
         tic = time.time()
+        self.arm.setWait(false)
         self.arm.MoveJ(target_pose, self.max_joint_speed)
         print("Time taken for MoveJ: ", time.time() - tic)
     
